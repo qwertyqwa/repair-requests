@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% set title = title %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>{{ title }}</h1>
+    <div class="pagehead__actions">
+      <a class="btn" href="{{ url_for('web.index') }}">На главную</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="muted">{{ message }}</p>
+  </div>
+{% endblock %}
+

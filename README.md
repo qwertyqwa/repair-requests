@@ -2,7 +2,20 @@
 
 Учебный проект: учет заявок на ремонт бытовой техники.
 
+Документация по **Заданию 1**: `docs/assignment1.md`.
+
 ## Запуск
+
+### Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m repair_requests
+```
+
+### Linux / WSL / macOS (bash)
 
 ```bash
 python -m venv .venv
@@ -20,4 +33,3 @@ python -m repair_requests
 - `master` / `master` (роль: мастер)
 
 Пользователи создаются автоматически при первом запуске и сохраняются в `data/users.json`.
-

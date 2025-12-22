@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% set title = "Заявка №" ~ request_obj.number %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Заявка №{{ request_obj.number }}</h1>
+    <div class="pagehead__actions">
+      <a class="btn" href="{{ url_for('web.index') }}">Назад</a>
+      {% if can_manage %}
+        <a class="btn btn--primary" href="{{ url_for('web.request_edit', number=request_obj.number) }}">Редактировать</a>
+        <form method="post" action="{{ url_for('web.request_delete', number=request_obj.number) }}" class="inline" data-confirm="Удалить заявку №{{ request_obj.number }}?">
+          <button class="btn btn--danger" type="submit">Удалить</button>
+        </form>
+      {% endif %}
+      {% if is_master %}
+        <a class="btn btn--primary" href="{{ url_for('web.request_work', number=request_obj.number) }}">В работу</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Дата добавления</div>
+        <div>{{ request_obj.created_at|dt }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Статус</div>
+        <div>{{ request_obj.status|status_label }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Ответственный мастер</div>
+        <div>{{ request_obj.technician_username or "—" }}</div>
+      </div>
+    </div>
+
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Техника</div>
+        <div>{{ request_obj.appliance_type }} — {{ request_obj.appliance_model }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Тип неисправности</div>
+        <div>{{ request_obj.issue_type or "—" }}</div>
+      </div>
+    </div>
+
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Клиент</div>
+        <div>{{ request_obj.client_name }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Телефон</div>
+        <div>{{ request_obj.client_phone }}</div>
+      </div>
+    </div>
+
+    <div class="card__block">
+      <div class="muted">Описание проблемы</div>
+      <div class="pre">{{ request_obj.problem_description }}</div>
+    </div>
+
+    {% if request_obj.master_notes %}
+      <div class="card__block">
+        <div class="muted">Комментарий мастера</div>
+        <div class="pre">{{ request_obj.master_notes }}</div>
+      </div>
+    {% endif %}
+
+    {% if request_obj.parts_notes %}
+      <div class="card__block">
+        <div class="muted">Запчасти/материалы</div>
+        <div class="pre">{{ request_obj.parts_notes }}</div>
+      </div>
+    {% endif %}
+  </div>
+{% endblock %}

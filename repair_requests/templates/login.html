@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% set title = "Вход" %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Вход</h1>
+  </div>
+
+  <form class="form" method="post" action="{{ url_for('web.login', next=request.args.get('next', '')) }}">
+    <div class="grid">
+      <label class="field">
+        <span class="field__label">Логин</span>
+        <input class="field__input" name="username" autocomplete="username" autofocus />
+      </label>
+      <label class="field">
+        <span class="field__label">Пароль</span>
+        <input class="field__input" name="password" type="password" autocomplete="current-password" />
+      </label>
+    </div>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">Войти</button>
+    </div>
+
+    <div class="card" style="margin-top: 14px;">
+      <div class="muted">Пользователи по умолчанию</div>
+      <div class="pre">admin / admin
+operator / operator
+master / master</div>
+    </div>
+  </form>
+{% endblock %}
+

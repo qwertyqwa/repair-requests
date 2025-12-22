@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% set title = "Статистика" %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Статистика</h1>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="muted">Всего заявок</div>
+      <div class="metric">{{ summary.total }}</div>
+    </div>
+    <div class="card">
+      <div class="muted">Выполнено</div>
+      <div class="metric">{{ summary.completed }}</div>
+    </div>
+    <div class="card">
+      <div class="muted">Среднее время ремонта</div>
+      <div class="metric">{{ format_timedelta(summary.average_repair_time) }}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="h2">По типам неисправностей</h2>
+    {% if summary.by_issue_type %}
+      <ul class="list">
+        {% for issue, count in summary.by_issue_type %}
+          <li class="list__item">
+            <span>{{ issue }}</span>
+            <span class="badge">{{ count }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Данных пока нет.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+

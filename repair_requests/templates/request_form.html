@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% set title = page_title %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>{{ page_title }}</h1>
+    <div class="pagehead__actions">
+      {% if mode == "edit" %}
+        <a class="btn" href="{{ url_for('web.request_detail', number=request_obj.number) }}">Назад</a>
+      {% else %}
+        <a class="btn" href="{{ url_for('web.index') }}">Назад</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <form class="form" method="post" action="{% if mode == 'edit' %}{{ url_for('web.request_update', number=request_obj.number) }}{% else %}{{ url_for('web.request_create') }}{% endif %}">
+    <div class="grid">
+      <label class="field">
+        <span class="field__label">Вид техники *</span>
+        <input class="field__input" name="appliance_type" value="{{ form_data.get('appliance_type', request_obj.appliance_type if request_obj else '') }}" />
+        {% if errors.get('appliance_type') %}<span class="field__error">{{ errors.get('appliance_type') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">Модель *</span>
+        <input class="field__input" name="appliance_model" value="{{ form_data.get('appliance_model', request_obj.appliance_model if request_obj else '') }}" />
+        {% if errors.get('appliance_model') %}<span class="field__error">{{ errors.get('appliance_model') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">Тип неисправности</span>
+        <select class="field__input" name="issue_type">
+          {% set current_issue = form_data.get('issue_type', request_obj.issue_type if request_obj else '') %}
+          {% for issue in issue_types %}
+            <option value="{{ issue }}" {% if current_issue == issue %}selected{% endif %}>{{ issue }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.get('issue_type') %}<span class="field__error">{{ errors.get('issue_type') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">ФИО клиента *</span>
+        <input class="field__input" name="client_name" value="{{ form_data.get('client_name', request_obj.client_name if request_obj else '') }}" />
+        {% if errors.get('client_name') %}<span class="field__error">{{ errors.get('client_name') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">Телефон *</span>
+        <input class="field__input" name="client_phone" value="{{ form_data.get('client_phone', request_obj.client_phone if request_obj else '') }}" />
+        {% if errors.get('client_phone') %}<span class="field__error">{{ errors.get('client_phone') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">Ответственный мастер</span>
+        <select class="field__input" name="technician_username">
+          {% set current_master = form_data.get('technician_username', request_obj.technician_username if request_obj else '') %}
+          <option value="" {% if not current_master %}selected{% endif %}>—</option>
+          {% for m in masters %}
+            <option value="{{ m.username }}" {% if current_master == m.username %}selected{% endif %}>{{ m.username }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field field--full">
+        <span class="field__label">Описание проблемы *</span>
+        <textarea class="field__input" name="problem_description" rows="4">{{ form_data.get('problem_description', request_obj.problem_description if request_obj else '') }}</textarea>
+        {% if errors.get('problem_description') %}<span class="field__error">{{ errors.get('problem_description') }}</span>{% endif %}
+      </label>
+
+      <label class="field">
+        <span class="field__label">Статус</span>
+        {% set current_status = form_data.get('status', request_obj.status.value if request_obj else '') %}
+        <select class="field__input" name="status">
+          <option value="" {% if not current_status %}selected{% endif %}>—</option>
+          {% for value, label in status_choices %}
+            <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.get('status') %}<span class="field__error">{{ errors.get('status') }}</span>{% endif %}
+      </label>
+
+      <label class="field field--full">
+        <span class="field__label">Комментарий мастера</span>
+        <textarea class="field__input" name="master_notes" rows="3">{{ form_data.get('master_notes', request_obj.master_notes if request_obj else '') }}</textarea>
+      </label>
+
+      <label class="field field--full">
+        <span class="field__label">Запчасти/материалы</span>
+        <textarea class="field__input" name="parts_notes" rows="3">{{ form_data.get('parts_notes', request_obj.parts_notes if request_obj else '') }}</textarea>
+      </label>
+    </div>
+
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">Сохранить</button>
+      {% if mode == "edit" %}
+        <a class="btn" href="{{ url_for('web.request_detail', number=request_obj.number) }}">Отмена</a>
+      {% else %}
+        <a class="btn" href="{{ url_for('web.index') }}">Отмена</a>
+      {% endif %}
+    </div>
+  </form>
+{% endblock %}
+
