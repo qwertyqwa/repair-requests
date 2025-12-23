@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% set title = "Уведомления" %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Уведомления</h1>
+  </div>
+
+  {% if notifications %}
+    <ul class="list">
+      {% for n in notifications %}
+        <li class="list__item {% if not n.is_read %}list__item--unread{% endif %}">
+          <div class="stack">
+            <div class="muted">{{ n.created_at|dt }}</div>
+            <div>
+              {% if n.ticket_number %}
+                <a href="{{ url_for('web.request_detail', number=n.ticket_number) }}">{{ n.message }}</a>
+              {% else %}
+                {{ n.message }}
+              {% endif %}
+            </div>
+          </div>
+          {% if not n.is_read %}
+            <form method="post" action="{{ url_for('web.notification_read', notification_id=n.id) }}">
+              <button class="btn" type="submit">Прочитано</button>
+            </form>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">
+      <p>Уведомлений пока нет.</p>
+    </div>
+  {% endif %}
+{% endblock %}
+

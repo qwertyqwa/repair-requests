@@ -60,19 +60,80 @@
       <div class="muted">Описание проблемы</div>
       <div class="pre">{{ request_obj.problem_description }}</div>
     </div>
+  </div>
 
-    {% if request_obj.master_notes %}
-      <div class="card__block">
-        <div class="muted">Комментарий мастера</div>
-        <div class="pre">{{ request_obj.master_notes }}</div>
+  <div class="card">
+    <h2 class="h2">Комплектующие</h2>
+    {% if parts %}
+      <ul class="list">
+        {% for p in parts %}
+          <li class="list__item">
+            <div class="stack">
+              <div><strong>{{ p.part_name }}</strong> × {{ p.quantity }}</div>
+              <div class="muted">{{ p.created_at|dt }}</div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Комплектующих пока нет.</p>
+    {% endif %}
+    {% if is_master %}
+      <div class="form__actions">
+        <a class="btn" href="{{ url_for('web.request_work', number=request_obj.number) }}">Добавить комплектующую</a>
       </div>
     {% endif %}
+  </div>
 
-    {% if request_obj.parts_notes %}
-      <div class="card__block">
-        <div class="muted">Запчасти/материалы</div>
-        <div class="pre">{{ request_obj.parts_notes }}</div>
+  <div class="card">
+    <h2 class="h2">Комментарии</h2>
+    {% if comments %}
+      <ul class="list">
+        {% for c in comments %}
+          <li class="list__item">
+            <div class="stack">
+              <div><strong>{{ c.author_username }}</strong> <span class="muted">— {{ c.created_at|dt }}</span></div>
+              <div class="pre">{{ c.body }}</div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Комментариев пока нет.</p>
+    {% endif %}
+
+    <form class="form" method="post" action="{{ url_for('web.request_add_comment', number=request_obj.number) }}">
+      <label class="field field--full">
+        <span class="field__label">Новый комментарий</span>
+        <textarea class="field__input" name="body" rows="3"></textarea>
+      </label>
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">Добавить</button>
       </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="h2">История статусов</h2>
+    {% if history %}
+      <ul class="list">
+        {% for h in history %}
+          <li class="list__item">
+            <div class="stack">
+              <div>
+                {% if h.old_status %}
+                  {{ h.old_status|status_label }} → {{ h.new_status|status_label }}
+                {% else %}
+                  {{ h.new_status|status_label }}
+                {% endif %}
+              </div>
+              <div class="muted">{{ h.changed_by_username }} — {{ h.changed_at|dt }}</div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">История пока пуста.</p>
     {% endif %}
   </div>
 {% endblock %}

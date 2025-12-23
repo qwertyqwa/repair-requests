@@ -67,27 +67,19 @@
         {% if errors.get('problem_description') %}<span class="field__error">{{ errors.get('problem_description') }}</span>{% endif %}
       </label>
 
-      <label class="field">
-        <span class="field__label">Статус</span>
-        {% set current_status = form_data.get('status', request_obj.status.value if request_obj else '') %}
-        <select class="field__input" name="status">
-          <option value="" {% if not current_status %}selected{% endif %}>—</option>
-          {% for value, label in status_choices %}
-            <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        {% if errors.get('status') %}<span class="field__error">{{ errors.get('status') }}</span>{% endif %}
-      </label>
-
-      <label class="field field--full">
-        <span class="field__label">Комментарий мастера</span>
-        <textarea class="field__input" name="master_notes" rows="3">{{ form_data.get('master_notes', request_obj.master_notes if request_obj else '') }}</textarea>
-      </label>
-
-      <label class="field field--full">
-        <span class="field__label">Запчасти/материалы</span>
-        <textarea class="field__input" name="parts_notes" rows="3">{{ form_data.get('parts_notes', request_obj.parts_notes if request_obj else '') }}</textarea>
-      </label>
+      {% if mode == "edit" %}
+        <label class="field">
+          <span class="field__label">Статус</span>
+          {% set current_status = form_data.get('status', request_obj.status.value if request_obj else '') %}
+          <select class="field__input" name="status">
+            <option value="" {% if not current_status %}selected{% endif %}>—</option>
+            {% for value, label in status_choices %}
+              <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.get('status') %}<span class="field__error">{{ errors.get('status') }}</span>{% endif %}
+        </label>
+      {% endif %}
     </div>
 
     <div class="form__actions">
@@ -100,4 +92,3 @@
     </div>
   </form>
 {% endblock %}
-

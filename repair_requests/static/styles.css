@@ -373,6 +373,16 @@ a {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.list__item--unread {
+  border-color: rgba(79, 124, 255, 0.35);
+  background: rgba(79, 124, 255, 0.08);
+}
+
+.stack {
+  display: grid;
+  gap: 6px;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

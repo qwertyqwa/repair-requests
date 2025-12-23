@@ -1,85 +1,178 @@
 from __future__ import annotations
 
-import json
-from dataclasses import replace
-from pathlib import Path
-from typing import Any
+import sqlite3
+from datetime import datetime
 
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import check_password_hash
 
-from repair_requests.domain import RepairRequest, RequestStatus, Role, User, utcnow
+from repair_requests.db import connect, init_db
+from repair_requests.domain import (
+    NotificationItem,
+    RepairRequest,
+    RequestStatus,
+    STATUS_LABELS,
+    Role,
+    StatusHistoryItem,
+    TicketComment,
+    TicketPart,
+    User,
+    utcnow,
+)
 
 
-class JsonStore:
-    def __init__(self, data_dir: str) -> None:
-        self.data_dir = Path(data_dir)
-        self._users: dict[str, User] = {}
-        self._requests: dict[int, RepairRequest] = {}
-        self._next_request_number = 1
+def parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
 
-    @property
-    def users_path(self) -> Path:
-        return self.data_dir / "users.json"
 
-    @property
-    def requests_path(self) -> Path:
-        return self.data_dir / "requests.json"
+class SqliteStore:
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
 
     def bootstrap(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        if not self.users_path.exists():
-            self._bootstrap_users()
-        if not self.requests_path.exists():
-            self._bootstrap_requests()
-        self._load()
+        init_db(self.db_path)
 
     def verify_password(self, username: str, password: str) -> bool:
-        user = self._users.get(username)
-        if not user:
-            return False
-        return check_password_hash(user.password_hash, password)
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT password_hash FROM users WHERE username = ? AND is_active = 1",
+                (username,),
+            ).fetchone()
+            if not row:
+                return False
+            return check_password_hash(row["password_hash"], password)
 
     def get_user(self, username: str) -> User | None:
-        return self._users.get(username)
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id, username, password_hash, role, full_name, is_active "
+                "FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if not row:
+                return None
+            return User(
+                id=int(row["id"]),
+                username=str(row["username"]),
+                password_hash=str(row["password_hash"]),
+                role=Role(str(row["role"])),
+                full_name=str(row["full_name"] or ""),
+                is_active=bool(int(row["is_active"])),
+            )
+
+    def get_user_id(self, username: str) -> int | None:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM users WHERE username = ? AND is_active = 1",
+                (username,),
+            ).fetchone()
+            return int(row["id"]) if row else None
 
     def list_masters(self) -> list[User]:
-        return sorted(
-            [u for u in self._users.values() if u.role == Role.MASTER],
-            key=lambda u: u.username.lower(),
-        )
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT id, username, password_hash, role, full_name, is_active "
+                "FROM users WHERE role = ? AND is_active = 1 ORDER BY username",
+                (Role.MASTER.value,),
+            ).fetchall()
+            return [
+                User(
+                    id=int(r["id"]),
+                    username=str(r["username"]),
+                    password_hash=str(r["password_hash"]),
+                    role=Role(str(r["role"])),
+                    full_name=str(r["full_name"] or ""),
+                    is_active=bool(int(r["is_active"])),
+                )
+                for r in rows
+            ]
 
     def list_requests(self) -> list[RepairRequest]:
-        return sorted(self._requests.values(), key=lambda r: r.number, reverse=True)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(self._tickets_select_sql() + " ORDER BY t.request_number DESC").fetchall()
+            return [self._row_to_ticket(r) for r in rows]
 
     def get_request(self, number: int) -> RepairRequest | None:
-        return self._requests.get(number)
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                self._tickets_select_sql() + " WHERE t.request_number = ?",
+                (number,),
+            ).fetchone()
+            return self._row_to_ticket(row) if row else None
 
     def create_request(
         self,
         *,
         appliance_type: str,
         appliance_model: str,
-        issue_type: str,
+        issue_type: str | None,
         problem_description: str,
         client_name: str,
         client_phone: str,
+        technician_username: str | None,
+        created_by_user_id: int,
     ) -> RepairRequest:
-        number = self._next_request_number
-        self._next_request_number += 1
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            client_id = self._get_or_create_client(
+                connection,
+                full_name=client_name,
+                phone=client_phone,
+            )
+            appliance_id = self._get_or_create_appliance(
+                connection,
+                appliance_type=appliance_type,
+                appliance_model=appliance_model,
+            )
+            issue_type_id = self._get_issue_type_id(connection, issue_type)
+            assigned_specialist_id = (
+                self._get_user_id_for_username(connection, technician_username)
+                if technician_username
+                else None
+            )
+            request_number = self._next_request_number(connection)
 
-        request = RepairRequest(
-            number=number,
-            created_at=utcnow(),
-            appliance_type=appliance_type,
-            appliance_model=appliance_model,
-            issue_type=issue_type,
-            problem_description=problem_description,
-            client_name=client_name,
-            client_phone=client_phone,
-        )
-        self._requests[number] = request
-        self._save()
-        return request
+            cursor = connection.execute(
+                "INSERT INTO tickets("
+                "request_number, created_at, updated_at, status, client_id, appliance_id, "
+                "issue_type_id, problem_description, assigned_specialist_id, started_at, completed_at"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                (
+                    request_number,
+                    now,
+                    now,
+                    RequestStatus.NEW.value,
+                    client_id,
+                    appliance_id,
+                    issue_type_id,
+                    problem_description,
+                    assigned_specialist_id,
+                ),
+            )
+            ticket_id = int(cursor.lastrowid)
+
+            connection.execute(
+                "INSERT INTO status_history(ticket_id, old_status, new_status, changed_by_user_id, changed_at) "
+                "VALUES(?, NULL, ?, ?, ?)",
+                (ticket_id, RequestStatus.NEW.value, created_by_user_id, now),
+            )
+
+            if assigned_specialist_id is not None:
+                self._create_notification(
+                    connection,
+                    user_id=assigned_specialist_id,
+                    ticket_id=ticket_id,
+                    message=f"Вам назначена заявка №{request_number}.",
+                    created_at=now,
+                )
+
+            connection.commit()
+
+        created = self.get_request(request_number)
+        if not created:
+            raise RuntimeError("Failed to create request")
+        return created
 
     def update_request(
         self,
@@ -93,45 +186,144 @@ class JsonStore:
         client_phone: str | None = None,
         status: RequestStatus | None = None,
         technician_username: str | None = None,
-        master_notes: str | None = None,
-        parts_notes: str | None = None,
+        changed_by_user_id: int,
     ) -> RepairRequest:
-        existing = self._requests.get(number)
-        if not existing:
-            raise KeyError("Request not found")
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id, status, assigned_specialist_id, client_id, appliance_id "
+                "FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                raise KeyError("Request not found")
 
-        updated = replace(existing)
-        if appliance_type is not None:
-            updated.appliance_type = appliance_type
-        if appliance_model is not None:
-            updated.appliance_model = appliance_model
-        if issue_type is not None:
-            updated.issue_type = issue_type
-        if problem_description is not None:
-            updated.problem_description = problem_description
-        if client_name is not None:
-            updated.client_name = client_name
-        if client_phone is not None:
-            updated.client_phone = client_phone
-        if technician_username is not None:
-            updated.technician_username = technician_username or None
-        if master_notes is not None:
-            updated.master_notes = master_notes
-        if parts_notes is not None:
-            updated.parts_notes = parts_notes
+            ticket_id = int(row["id"])
+            old_status = str(row["status"])
+            old_assigned_id = row["assigned_specialist_id"]
+            client_id = int(row["client_id"])
+            appliance_id = int(row["appliance_id"])
 
-        if status is not None and status != updated.status:
-            updated = self._apply_status_transition(updated, status)
+            if client_name is not None or client_phone is not None:
+                connection.execute(
+                    "UPDATE clients SET full_name = COALESCE(?, full_name), phone = COALESCE(?, phone) WHERE id = ?",
+                    (client_name, client_phone, client_id),
+                )
 
-        updated.updated_at = utcnow()
-        self._requests[number] = updated
-        self._save()
+            if appliance_type is not None or appliance_model is not None:
+                updated_type = (
+                    appliance_type
+                    if appliance_type is not None
+                    else connection.execute(
+                        "SELECT appliance_type FROM appliances WHERE id = ?",
+                        (appliance_id,),
+                    ).fetchone()["appliance_type"]
+                )
+                updated_model = (
+                    appliance_model
+                    if appliance_model is not None
+                    else connection.execute(
+                        "SELECT appliance_model FROM appliances WHERE id = ?",
+                        (appliance_id,),
+                    ).fetchone()["appliance_model"]
+                )
+                new_appliance_id = self._get_or_create_appliance(
+                    connection,
+                    appliance_type=str(updated_type),
+                    appliance_model=str(updated_model),
+                )
+            else:
+                new_appliance_id = appliance_id
+
+            new_issue_type_id = (
+                self._get_issue_type_id(connection, issue_type)
+                if issue_type is not None
+                else None
+            )
+
+            new_assigned_id = (
+                self._get_user_id_for_username(connection, technician_username)
+                if technician_username is not None and technician_username != ""
+                else None
+            )
+            if technician_username is None:
+                new_assigned_id = old_assigned_id
+
+            started_at = None
+            completed_at = None
+            next_status_value = old_status
+            if status is not None and status.value != old_status:
+                next_status_value = status.value
+                if next_status_value == RequestStatus.IN_PROGRESS.value:
+                    started_at = now
+                if next_status_value == RequestStatus.READY.value:
+                    completed_at = now
+
+            connection.execute(
+                "UPDATE tickets SET "
+                "updated_at = ?, "
+                "status = ?, "
+                "appliance_id = ?, "
+                "issue_type_id = COALESCE(?, issue_type_id), "
+                "problem_description = COALESCE(?, problem_description), "
+                "assigned_specialist_id = ?, "
+                "started_at = COALESCE(started_at, ?), "
+                "completed_at = COALESCE(completed_at, ?) "
+                "WHERE id = ?",
+                (
+                    now,
+                    next_status_value,
+                    new_appliance_id,
+                    new_issue_type_id,
+                    problem_description,
+                    new_assigned_id,
+                    started_at,
+                    completed_at,
+                    ticket_id,
+                ),
+            )
+
+            if status is not None and status.value != old_status:
+                connection.execute(
+                    "INSERT INTO status_history(ticket_id, old_status, new_status, changed_by_user_id, changed_at) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (ticket_id, old_status, status.value, changed_by_user_id, now),
+                )
+                self._create_status_change_notifications(
+                    connection,
+                    ticket_id=ticket_id,
+                    request_number=number,
+                    new_status=status.value,
+                    changed_by_user_id=changed_by_user_id,
+                    created_at=now,
+                )
+
+            if new_assigned_id != old_assigned_id and new_assigned_id is not None:
+                self._create_notification(
+                    connection,
+                    user_id=int(new_assigned_id),
+                    ticket_id=ticket_id,
+                    message=f"Вам назначена заявка №{number}.",
+                    created_at=now,
+                )
+
+            connection.commit()
+
+        updated = self.get_request(number)
+        if not updated:
+            raise RuntimeError("Failed to update request")
         return updated
 
     def delete_request(self, number: int) -> None:
-        if number in self._requests:
-            del self._requests[number]
-            self._save()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return
+            connection.execute("DELETE FROM tickets WHERE id = ?", (int(row["id"]),))
+            connection.commit()
 
     def search_requests(
         self,
@@ -140,120 +332,384 @@ class JsonStore:
         status: RequestStatus | None = None,
         technician_username: str | None = None,
     ) -> list[RepairRequest]:
-        needle = query.strip().lower()
-        results: list[RepairRequest] = []
-        for request in self._requests.values():
-            if status is not None and request.status != status:
-                continue
-            if technician_username is not None and request.technician_username != technician_username:
-                continue
-            if not needle:
-                results.append(request)
-                continue
+        needle = query.strip()
+        filters: list[str] = []
+        params: list[object] = []
 
-            haystack = " ".join(
-                [
-                    str(request.number),
-                    request.appliance_type,
-                    request.appliance_model,
-                    request.issue_type,
-                    request.problem_description,
-                    request.client_name,
-                    request.client_phone,
-                    request.status.value,
-                    request.technician_username or "",
-                ]
-            ).lower()
-            if needle in haystack:
-                results.append(request)
+        if status is not None:
+            filters.append("t.status = ?")
+            params.append(status.value)
 
-        return sorted(results, key=lambda r: r.number, reverse=True)
+        if technician_username is not None:
+            filters.append("u.username = ?")
+            params.append(technician_username)
 
-    def _apply_status_transition(
-        self, request: RepairRequest, next_status: RequestStatus
-    ) -> RepairRequest:
-        if next_status == RequestStatus.IN_PROGRESS and request.started_at is None:
-            request.started_at = utcnow()
-        if next_status == RequestStatus.READY and request.completed_at is None:
-            request.completed_at = utcnow()
-        request.status = next_status
-        return request
+        if needle:
+            if needle.isdigit():
+                filters.append("t.request_number = ?")
+                params.append(int(needle))
+            else:
+                like = f"%{needle.lower()}%"
+                filters.append(
+                    "("
+                    "LOWER(c.full_name) LIKE ? OR "
+                    "LOWER(c.phone) LIKE ? OR "
+                    "LOWER(a.appliance_type) LIKE ? OR "
+                    "LOWER(a.appliance_model) LIKE ? OR "
+                    "LOWER(t.problem_description) LIKE ? OR "
+                    "LOWER(COALESCE(it.name, '')) LIKE ?"
+                    ")"
+                )
+                params.extend([like, like, like, like, like, like])
 
-    def _bootstrap_users(self) -> None:
-        default_users = [
-            User(
-                username="admin",
-                password_hash=generate_password_hash("admin"),
-                role=Role.ADMIN,
-                full_name="Администратор",
-            ),
-            User(
-                username="operator",
-                password_hash=generate_password_hash("operator"),
-                role=Role.OPERATOR,
-                full_name="Оператор",
-            ),
-            User(
-                username="master",
-                password_hash=generate_password_hash("master"),
-                role=Role.MASTER,
-                full_name="Мастер",
-            ),
-        ]
-        payload = {"users": [u.to_dict() for u in default_users]}
-        self._atomic_write_json(self.users_path, payload)
+        where_sql = f" WHERE {' AND '.join(filters)}" if filters else ""
+        sql = self._tickets_select_sql() + where_sql + " ORDER BY t.request_number DESC"
 
-    def _bootstrap_requests(self) -> None:
-        payload = {"next_number": 1, "requests": []}
-        self._atomic_write_json(self.requests_path, payload)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+            return [self._row_to_ticket(r) for r in rows]
 
-    def _load(self) -> None:
-        users_payload = self._read_json(self.users_path)
-        users_raw = users_payload.get("users", [])
-        if not isinstance(users_raw, list):
-            raise ValueError("Invalid users.json format")
-        self._users = {}
-        for item in users_raw:
-            if not isinstance(item, dict):
-                continue
-            user = User.from_dict(item)  # type: ignore[arg-type]
-            self._users[user.username] = user
+    def list_comments(self, number: int) -> list[TicketComment]:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return []
+            ticket_id = int(row["id"])
+            rows = connection.execute(
+                "SELECT tc.id, tc.ticket_id, u.username AS author_username, tc.body, tc.created_at "
+                "FROM ticket_comments tc "
+                "JOIN users u ON u.id = tc.user_id "
+                "WHERE tc.ticket_id = ? "
+                "ORDER BY tc.id DESC",
+                (ticket_id,),
+            ).fetchall()
+            return [
+                TicketComment(
+                    id=int(r["id"]),
+                    ticket_id=int(r["ticket_id"]),
+                    author_username=str(r["author_username"]),
+                    body=str(r["body"]),
+                    created_at=datetime.fromisoformat(str(r["created_at"])),
+                )
+                for r in rows
+            ]
 
-        requests_payload = self._read_json(self.requests_path)
-        next_number = requests_payload.get("next_number", 1)
-        if not isinstance(next_number, int):
-            raise ValueError("Invalid next_number")
-        self._next_request_number = max(1, next_number)
+    def add_comment(self, number: int, *, user_id: int, body: str) -> TicketComment:
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                raise KeyError("Request not found")
+            ticket_id = int(row["id"])
 
-        requests_raw = requests_payload.get("requests", [])
-        if not isinstance(requests_raw, list):
-            raise ValueError("Invalid requests.json format")
-        self._requests = {}
-        for item in requests_raw:
-            if not isinstance(item, dict):
-                continue
-            request = RepairRequest.from_dict(item)
-            self._requests[request.number] = request
-            self._next_request_number = max(self._next_request_number, request.number + 1)
+            cursor = connection.execute(
+                "INSERT INTO ticket_comments(ticket_id, user_id, body, created_at) VALUES(?, ?, ?, ?)",
+                (ticket_id, user_id, body, now),
+            )
+            comment_id = int(cursor.lastrowid)
+            connection.commit()
 
-    def _save(self) -> None:
-        payload = {
-            "next_number": self._next_request_number,
-            "requests": [r.to_dict() for r in self.list_requests()[::-1]],
-        }
-        self._atomic_write_json(self.requests_path, payload)
+            author = connection.execute(
+                "SELECT username FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            author_username = str(author["username"]) if author else "unknown"
+            return TicketComment(
+                id=comment_id,
+                ticket_id=ticket_id,
+                author_username=author_username,
+                body=body,
+                created_at=datetime.fromisoformat(now),
+            )
 
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            raise ValueError("Invalid JSON root")
-        return data
+    def list_parts(self, number: int) -> list[TicketPart]:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return []
+            ticket_id = int(row["id"])
+            rows = connection.execute(
+                "SELECT id, ticket_id, part_name, quantity, created_at "
+                "FROM ticket_parts WHERE ticket_id = ? ORDER BY id DESC",
+                (ticket_id,),
+            ).fetchall()
+            return [
+                TicketPart(
+                    id=int(r["id"]),
+                    ticket_id=int(r["ticket_id"]),
+                    part_name=str(r["part_name"]),
+                    quantity=int(r["quantity"]),
+                    created_at=datetime.fromisoformat(str(r["created_at"])),
+                )
+                for r in rows
+            ]
 
-    def _atomic_write_json(self, path: Path, payload: dict[str, Any]) -> None:
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    def add_part(self, number: int, *, part_name: str, quantity: int) -> TicketPart:
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                raise KeyError("Request not found")
+            ticket_id = int(row["id"])
+            cursor = connection.execute(
+                "INSERT INTO ticket_parts(ticket_id, part_name, quantity, created_at) VALUES(?, ?, ?, ?)",
+                (ticket_id, part_name, quantity, now),
+            )
+            part_id = int(cursor.lastrowid)
+            connection.commit()
+            return TicketPart(
+                id=part_id,
+                ticket_id=ticket_id,
+                part_name=part_name,
+                quantity=quantity,
+                created_at=datetime.fromisoformat(now),
+            )
+
+    def delete_part(self, number: int, part_id: int) -> None:
+        with connect(self.db_path) as connection:
+            connection.execute(
+                "DELETE FROM ticket_parts WHERE id = ? AND ticket_id = ("
+                "SELECT id FROM tickets WHERE request_number = ?"
+                ")",
+                (part_id, number),
+            )
+            connection.commit()
+
+    def list_history(self, number: int) -> list[StatusHistoryItem]:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return []
+            ticket_id = int(row["id"])
+            rows = connection.execute(
+                "SELECT sh.id, sh.ticket_id, sh.old_status, sh.new_status, u.username AS changed_by, sh.changed_at "
+                "FROM status_history sh "
+                "JOIN users u ON u.id = sh.changed_by_user_id "
+                "WHERE sh.ticket_id = ? "
+                "ORDER BY sh.id DESC",
+                (ticket_id,),
+            ).fetchall()
+            items: list[StatusHistoryItem] = []
+            for r in rows:
+                old_raw = r["old_status"]
+                old = RequestStatus(str(old_raw)) if old_raw else None
+                items.append(
+                    StatusHistoryItem(
+                        id=int(r["id"]),
+                        ticket_id=int(r["ticket_id"]),
+                        old_status=old,
+                        new_status=RequestStatus(str(r["new_status"])),
+                        changed_by_username=str(r["changed_by"]),
+                        changed_at=datetime.fromisoformat(str(r["changed_at"])),
+                    )
+                )
+            return items
+
+    def unread_notifications_count(self, user_id: int) -> int:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND is_read = 0",
+                (user_id,),
+            ).fetchone()
+            return int(row["c"]) if row else 0
+
+    def list_notifications(self, user_id: int) -> list[NotificationItem]:
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT n.id, t.request_number AS ticket_number, n.message, n.is_read, n.created_at "
+                "FROM notifications n "
+                "LEFT JOIN tickets t ON t.id = n.ticket_id "
+                "WHERE n.user_id = ? "
+                "ORDER BY n.id DESC",
+                (user_id,),
+            ).fetchall()
+            return [
+                NotificationItem(
+                    id=int(r["id"]),
+                    ticket_number=int(r["ticket_number"]) if r["ticket_number"] is not None else None,
+                    message=str(r["message"]),
+                    is_read=bool(int(r["is_read"])),
+                    created_at=datetime.fromisoformat(str(r["created_at"])),
+                )
+                for r in rows
+            ]
+
+    def mark_notification_read(self, user_id: int, notification_id: int) -> None:
+        with connect(self.db_path) as connection:
+            connection.execute(
+                "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+                (notification_id, user_id),
+            )
+            connection.commit()
+
+    def _tickets_select_sql(self) -> str:
+        return (
+            "SELECT "
+            "t.id, t.request_number, t.created_at, t.updated_at, t.status, "
+            "c.full_name AS client_name, c.phone AS client_phone, "
+            "a.appliance_type, a.appliance_model, "
+            "it.name AS issue_type, "
+            "t.problem_description, "
+            "u.username AS technician_username, "
+            "t.started_at, t.completed_at "
+            "FROM tickets t "
+            "JOIN clients c ON c.id = t.client_id "
+            "JOIN appliances a ON a.id = t.appliance_id "
+            "LEFT JOIN issue_types it ON it.id = t.issue_type_id "
+            "LEFT JOIN users u ON u.id = t.assigned_specialist_id"
         )
-        tmp_path.replace(path)
+
+    def _row_to_ticket(self, row: sqlite3.Row) -> RepairRequest:
+        return RepairRequest(
+            id=int(row["id"]),
+            number=int(row["request_number"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+            appliance_type=str(row["appliance_type"]),
+            appliance_model=str(row["appliance_model"]),
+            issue_type=str(row["issue_type"]) if row["issue_type"] is not None else None,
+            problem_description=str(row["problem_description"]),
+            client_name=str(row["client_name"]),
+            client_phone=str(row["client_phone"]),
+            status=RequestStatus(str(row["status"])),
+            technician_username=(
+                str(row["technician_username"])
+                if row["technician_username"] is not None
+                else None
+            ),
+            started_at=parse_dt(str(row["started_at"]) if row["started_at"] is not None else None),
+            completed_at=parse_dt(str(row["completed_at"]) if row["completed_at"] is not None else None),
+        )
+
+    def _next_request_number(self, connection: sqlite3.Connection) -> int:
+        row = connection.execute("SELECT MAX(request_number) AS m FROM tickets").fetchone()
+        current = int(row["m"]) if row and row["m"] is not None else 0
+        return current + 1
+
+    def _get_or_create_client(
+        self, connection: sqlite3.Connection, *, full_name: str, phone: str
+    ) -> int:
+        existing = connection.execute(
+            "SELECT id FROM clients WHERE phone = ?",
+            (phone,),
+        ).fetchone()
+        if existing:
+            connection.execute(
+                "UPDATE clients SET full_name = ? WHERE id = ?",
+                (full_name, int(existing["id"])),
+            )
+            return int(existing["id"])
+
+        cursor = connection.execute(
+            "INSERT INTO clients(full_name, phone) VALUES(?, ?)",
+            (full_name, phone),
+        )
+        return int(cursor.lastrowid)
+
+    def _get_or_create_appliance(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        appliance_type: str,
+        appliance_model: str,
+    ) -> int:
+        existing = connection.execute(
+            "SELECT id FROM appliances WHERE appliance_type = ? AND appliance_model = ?",
+            (appliance_type, appliance_model),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
+
+        cursor = connection.execute(
+            "INSERT INTO appliances(appliance_type, appliance_model) VALUES(?, ?)",
+            (appliance_type, appliance_model),
+        )
+        return int(cursor.lastrowid)
+
+    def _get_issue_type_id(
+        self, connection: sqlite3.Connection, issue_type: str | None
+    ) -> int | None:
+        if issue_type is None:
+            return None
+        name = issue_type.strip()
+        if not name or name == "Не выбрано":
+            return None
+        existing = connection.execute(
+            "SELECT id FROM issue_types WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
+        cursor = connection.execute(
+            "INSERT INTO issue_types(name) VALUES(?)",
+            (name,),
+        )
+        return int(cursor.lastrowid)
+
+    def _get_user_id_for_username(
+        self, connection: sqlite3.Connection, username: str | None
+    ) -> int | None:
+        if not username:
+            return None
+        row = connection.execute(
+            "SELECT id FROM users WHERE username = ? AND is_active = 1",
+            (username,),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def _create_notification(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        user_id: int,
+        ticket_id: int | None,
+        message: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO notifications(user_id, ticket_id, message, is_read, created_at) "
+            "VALUES(?, ?, ?, 0, ?)",
+            (user_id, ticket_id, message, created_at),
+        )
+
+    def _create_status_change_notifications(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        ticket_id: int,
+        request_number: int,
+        new_status: str,
+        changed_by_user_id: int,
+        created_at: str,
+    ) -> None:
+        try:
+            label = STATUS_LABELS[RequestStatus(new_status)]
+        except Exception:
+            label = new_status
+        rows = connection.execute(
+            "SELECT id FROM users WHERE is_active = 1 AND role IN (?, ?) AND id != ?",
+            (Role.ADMIN.value, Role.OPERATOR.value, changed_by_user_id),
+        ).fetchall()
+        for r in rows:
+            self._create_notification(
+                connection,
+                user_id=int(r["id"]),
+                ticket_id=ticket_id,
+                message=f"Заявка №{request_number}: статус изменён на «{label}».",
+                created_at=created_at,
+            )

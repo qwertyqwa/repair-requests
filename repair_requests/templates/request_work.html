@@ -31,35 +31,111 @@
     </div>
   </div>
 
-  <form class="form" method="post" action="{{ url_for('web.request_work_update', number=request_obj.number) }}">
-    <div class="grid">
-      <label class="field">
-        <span class="field__label">Новый статус</span>
-        {% set current_status = form_data.get('status', request_obj.status.value) %}
-        <select class="field__input" name="status">
-          <option value="" {% if not current_status %}selected{% endif %}>—</option>
-          {% for value, label in status_choices %}
-            <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        {% if errors.get('status') %}<span class="field__error">{{ errors.get('status') }}</span>{% endif %}
-      </label>
-
-      <label class="field field--full">
-        <span class="field__label">Комментарий мастера</span>
-        <textarea class="field__input" name="master_notes" rows="4">{{ form_data.get('master_notes', request_obj.master_notes) }}</textarea>
-      </label>
-
-      <label class="field field--full">
-        <span class="field__label">Запчасти/материалы</span>
-        <textarea class="field__input" name="parts_notes" rows="4">{{ form_data.get('parts_notes', request_obj.parts_notes) }}</textarea>
-      </label>
+  <div class="cards">
+    <div class="card">
+      <h2 class="h2">Статус</h2>
+      <form class="filters" method="post" action="{{ url_for('web.request_work_update', number=request_obj.number) }}">
+        <label class="field field--grow">
+          <span class="field__label">Новый статус</span>
+          {% set current_status = request_obj.status.value %}
+          <select class="field__input" name="status">
+            <option value="" {% if not current_status %}selected{% endif %}>—</option>
+            {% for value, label in status_choices %}
+              <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.get('status') %}<span class="field__error">{{ errors.get('status') }}</span>{% endif %}
+        </label>
+        <button class="btn btn--primary" type="submit">Изменить</button>
+      </form>
     </div>
 
-    <div class="form__actions">
-      <button class="btn btn--primary" type="submit">Сохранить</button>
-      <a class="btn" href="{{ url_for('web.request_detail', number=request_obj.number) }}">Отмена</a>
+    <div class="card">
+      <h2 class="h2">Комментарий</h2>
+      <form class="form" method="post" action="{{ url_for('web.request_add_comment', number=request_obj.number) }}">
+        <label class="field field--full">
+          <span class="field__label">Новый комментарий</span>
+          <textarea class="field__input" name="body" rows="4" placeholder="Что сделано, что требуется уточнить, замечания…"></textarea>
+        </label>
+        <div class="form__actions">
+          <button class="btn btn--primary" type="submit">Добавить</button>
+        </div>
+      </form>
     </div>
-  </form>
+  </div>
+
+  <div class="card">
+    <h2 class="h2">Комплектующие</h2>
+    <form class="filters" method="post" action="{{ url_for('web.request_add_part', number=request_obj.number) }}">
+      <label class="field field--grow">
+        <span class="field__label">Название</span>
+        <input class="field__input" name="part_name" placeholder="Например: ТЭН, подшипник…" />
+      </label>
+      <label class="field" style="min-width: 140px;">
+        <span class="field__label">Кол-во</span>
+        <input class="field__input" name="quantity" inputmode="numeric" placeholder="1" />
+      </label>
+      <button class="btn btn--primary" type="submit">Добавить</button>
+    </form>
+
+    {% if parts %}
+      <ul class="list" style="margin-top: 10px;">
+        {% for p in parts %}
+          <li class="list__item">
+            <div class="stack">
+              <div><strong>{{ p.part_name }}</strong> × {{ p.quantity }}</div>
+              <div class="muted">{{ p.created_at|dt }}</div>
+            </div>
+            <form method="post" action="{{ url_for('web.request_delete_part', number=request_obj.number, part_id=p.id) }}" class="inline" data-confirm="Удалить комплектующую «{{ p.part_name }}»?">
+              <button class="btn btn--danger" type="submit">Удалить</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Комплектующих пока нет.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="h2">Комментарии</h2>
+    {% if comments %}
+      <ul class="list">
+        {% for c in comments %}
+          <li class="list__item">
+            <div class="stack">
+              <div><strong>{{ c.author_username }}</strong> <span class="muted">— {{ c.created_at|dt }}</span></div>
+              <div class="pre">{{ c.body }}</div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Комментариев пока нет.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="h2">История статусов</h2>
+    {% if history %}
+      <ul class="list">
+        {% for h in history %}
+          <li class="list__item">
+            <div class="stack">
+              <div>
+                {% if h.old_status %}
+                  {{ h.old_status|status_label }} → {{ h.new_status|status_label }}
+                {% else %}
+                  {{ h.new_status|status_label }}
+                {% endif %}
+              </div>
+              <div class="muted">{{ h.changed_by_username }} — {{ h.changed_at|dt }}</div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">История пока пуста.</p>
+    {% endif %}
+  </div>
 {% endblock %}
-

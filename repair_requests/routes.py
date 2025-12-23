@@ -26,14 +26,14 @@ from repair_requests.domain import (
     RequestStatus,
 )
 from repair_requests.stats import format_timedelta, requests_summary
-from repair_requests.store import JsonStore
+from repair_requests.store import SqliteStore
 
 bp = Blueprint("web", __name__)
 
 
-def get_store() -> JsonStore:
+def get_store() -> SqliteStore:
     store = current_app.extensions.get("store")
-    if not isinstance(store, JsonStore):
+    if not isinstance(store, SqliteStore):
         raise RuntimeError("Store is not configured")
     return store
 
@@ -58,6 +58,9 @@ def load_logged_in_user():
     if isinstance(username, str) and user is None:
         session.pop("username", None)
     g.user = user
+    g.unread_notifications_count = (
+        store.unread_notifications_count(user.id) if user is not None else 0
+    )
 
     if request.endpoint == "web.login":
         return
@@ -166,11 +169,6 @@ def validate_request_form(form: dict[str, str]) -> tuple[dict[str, str], dict[st
     technician_username = (form.get("technician_username") or "").strip()
     data["technician_username"] = technician_username
 
-    master_notes = (form.get("master_notes") or "").strip()
-    parts_notes = (form.get("parts_notes") or "").strip()
-    data["master_notes"] = master_notes
-    data["parts_notes"] = parts_notes
-
     status_raw = (form.get("status") or "").strip()
     if status_raw:
         status = parse_status(status_raw)
@@ -186,19 +184,13 @@ def validate_master_work_form(form: dict[str, str]) -> tuple[dict[str, str], dic
     errors: dict[str, str] = {}
 
     status_raw = (form.get("status") or "").strip()
-    if status_raw:
+    if not status_raw:
+        errors["status"] = "Выберите статус."
+    else:
         status = parse_status(status_raw)
         if status is None:
             errors["status"] = "Выберите статус из списка."
         data["status"] = status_raw
-
-    master_notes = (form.get("master_notes") or "").strip()
-    parts_notes = (form.get("parts_notes") or "").strip()
-    data["master_notes"] = master_notes
-    data["parts_notes"] = parts_notes
-
-    if not status_raw and not master_notes and not parts_notes:
-        errors["__all__"] = "Заполните хотя бы одно поле."
 
     return data, errors
 
@@ -250,6 +242,9 @@ def request_new():
 def request_create():
     require_roles(Role.ADMIN, Role.OPERATOR)
     store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
     masters = store.list_masters()
     status_choices = [(s.value, STATUS_LABELS[s]) for s in RequestStatus]
     form_data, errors = validate_request_form(request.form.to_dict(flat=True))
@@ -267,17 +262,18 @@ def request_create():
             masters=masters,
         )
 
+    technician_username = (form_data.get("technician_username") or "").strip() or None
+    issue_type = (form_data.get("issue_type") or "").strip() or None
     created = store.create_request(
         appliance_type=form_data["appliance_type"],
         appliance_model=form_data["appliance_model"],
-        issue_type=form_data.get("issue_type", ""),
+        issue_type=issue_type,
         problem_description=form_data["problem_description"],
         client_name=form_data["client_name"],
         client_phone=form_data["client_phone"],
+        technician_username=technician_username,
+        created_by_user_id=user.id,
     )
-    technician_username = form_data.get("technician_username") or ""
-    if technician_username:
-        store.update_request(created.number, technician_username=technician_username)
 
     flash(f"Заявка №{created.number} создана.", "success")
     return redirect(url_for("web.request_detail", number=created.number))
@@ -293,11 +289,18 @@ def request_detail(number: int):
     if not request_obj:
         abort(404)
     ensure_request_access(request_obj)
+
+    comments = store.list_comments(number)
+    parts = store.list_parts(number)
+    history = store.list_history(number)
     return render_template(
         "request_detail.html",
         request_obj=request_obj,
         can_manage=user.role in {Role.ADMIN, Role.OPERATOR},
         is_master=user.role == Role.MASTER,
+        comments=comments,
+        parts=parts,
+        history=history,
     )
 
 
@@ -311,12 +314,18 @@ def request_work(number: int):
     ensure_request_access(request_obj)
 
     status_choices = [(s.value, STATUS_LABELS[s]) for s in RequestStatus]
+    comments = store.list_comments(number)
+    parts = store.list_parts(number)
+    history = store.list_history(number)
     return render_template(
         "request_work.html",
         request_obj=request_obj,
         status_choices=status_choices,
         errors={},
         form_data={},
+        comments=comments,
+        parts=parts,
+        history=history,
     )
 
 
@@ -324,6 +333,9 @@ def request_work(number: int):
 def request_work_update(number: int):
     require_roles(Role.MASTER)
     store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
     request_obj = store.get_request(number)
     if not request_obj:
         abort(404)
@@ -344,12 +356,11 @@ def request_work_update(number: int):
     previous_status = request_obj.status
     next_status = parse_status(form_data.get("status"))
 
-    updated = store.update_request(
-        number,
-        status=next_status,
-        master_notes=form_data.get("master_notes") or "",
-        parts_notes=form_data.get("parts_notes") or "",
-    )
+    if next_status is None:
+        flash("Выберите статус.", "error")
+        return redirect(url_for("web.request_work", number=number))
+
+    updated = store.update_request(number, status=next_status, changed_by_user_id=user.id)
 
     if next_status is not None and next_status != previous_status:
         flash(
@@ -386,6 +397,9 @@ def request_edit(number: int):
 def request_update(number: int):
     require_roles(Role.ADMIN, Role.OPERATOR)
     store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
     request_obj = store.get_request(number)
     if not request_obj:
         abort(404)
@@ -410,18 +424,18 @@ def request_update(number: int):
     previous_status = request_obj.status
     next_status = parse_status(form_data.get("status"))
 
+    issue_type = (form_data.get("issue_type") or "").strip() or None
     updated = store.update_request(
         number,
         appliance_type=form_data["appliance_type"],
         appliance_model=form_data["appliance_model"],
-        issue_type=form_data.get("issue_type", ""),
+        issue_type=issue_type,
         problem_description=form_data["problem_description"],
         client_name=form_data["client_name"],
         client_phone=form_data["client_phone"],
-        technician_username=form_data.get("technician_username") or "",
-        master_notes=form_data.get("master_notes") or "",
-        parts_notes=form_data.get("parts_notes") or "",
+        technician_username=(form_data.get("technician_username") or "").strip(),
         status=next_status,
+        changed_by_user_id=user.id,
     )
 
     if next_status is not None and next_status != previous_status:
@@ -443,6 +457,73 @@ def request_delete(number: int):
     store.delete_request(number)
     flash(f"Заявка №{number} удалена.", "warning")
     return redirect(url_for("web.index"))
+
+
+@bp.post("/requests/<int:number>/comments")
+def request_add_comment(number: int):
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+    ensure_request_access(request_obj)
+
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        flash("Комментарий не может быть пустым.", "error")
+        return redirect(request.referrer or url_for("web.request_detail", number=number))
+
+    store.add_comment(number, user_id=user.id, body=body)
+    flash("Комментарий добавлен.", "success")
+    return redirect(request.referrer or url_for("web.request_detail", number=number))
+
+
+@bp.post("/requests/<int:number>/parts")
+def request_add_part(number: int):
+    require_roles(Role.MASTER)
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+    ensure_request_access(request_obj)
+
+    part_name = (request.form.get("part_name") or "").strip()
+    qty_raw = (request.form.get("quantity") or "").strip()
+    if not part_name:
+        flash("Укажите название комплектующей.", "error")
+        return redirect(request.referrer or url_for("web.request_work", number=number))
+    if not qty_raw.isdigit() or int(qty_raw) <= 0:
+        flash("Количество должно быть положительным числом.", "error")
+        return redirect(request.referrer or url_for("web.request_work", number=number))
+
+    store.add_part(number, part_name=part_name, quantity=int(qty_raw))
+    flash("Комплектующая добавлена.", "success")
+    return redirect(request.referrer or url_for("web.request_work", number=number))
+
+
+@bp.post("/requests/<int:number>/parts/<int:part_id>/delete")
+def request_delete_part(number: int, part_id: int):
+    require_roles(Role.MASTER)
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+    ensure_request_access(request_obj)
+
+    store.delete_part(number, part_id)
+    flash("Комплектующая удалена.", "warning")
+    return redirect(request.referrer or url_for("web.request_work", number=number))
 
 
 @bp.get("/search")
@@ -490,6 +571,26 @@ def stats():
         summary=summary,
         format_timedelta=format_timedelta,
     )
+
+
+@bp.get("/notifications")
+def notifications():
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+    items = store.list_notifications(user.id)
+    return render_template("notifications.html", notifications=items)
+
+
+@bp.post("/notifications/<int:notification_id>/read")
+def notification_read(notification_id: int):
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+    store.mark_notification_read(user.id, notification_id)
+    return redirect(url_for("web.notifications"))
 
 
 @bp.route("/login", methods=["GET", "POST"])

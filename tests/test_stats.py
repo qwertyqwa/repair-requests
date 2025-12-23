@@ -9,8 +9,10 @@ from repair_requests.stats import average_repair_time
 def test_average_repair_time_calculates_mean_duration():
     base = datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc)
     r1 = RepairRequest(
+        id=1,
         number=1,
         created_at=base,
+        updated_at=base,
         appliance_type="Холодильник",
         appliance_model="LG",
         issue_type="Электрика",
@@ -22,8 +24,10 @@ def test_average_repair_time_calculates_mean_duration():
         completed_at=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
     )
     r2 = RepairRequest(
+        id=2,
         number=2,
         created_at=base,
+        updated_at=base,
         appliance_type="Стиральная машина",
         appliance_model="Samsung",
         issue_type="Механика",
@@ -38,4 +42,3 @@ def test_average_repair_time_calculates_mean_duration():
     avg = average_repair_time([r1, r2])
     assert avg is not None
     assert avg.total_seconds() == 3 * 3600
-
