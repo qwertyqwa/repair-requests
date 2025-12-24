@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% set title = "Просроченные заявки" %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Просроченные заявки</h1>
+  </div>
+
+  {% if requests %}
+    <div class="tablewrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>№</th>
+            <th>Срок</th>
+            <th>Статус</th>
+            <th>Мастер</th>
+            <th>Клиент</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in requests %}
+            <tr>
+              <td><a href="{{ url_for('web.request_detail', number=r.number) }}">№{{ r.number }}</a></td>
+              <td>{{ r.due_at|dt }}</td>
+              <td>{{ r.status|status_label }}</td>
+              <td>{{ r.technician_username or "—" }}</td>
+              <td>{{ r.client_name }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty">
+      <p>Просроченных заявок нет.</p>
+    </div>
+  {% endif %}
+{% endblock %}
+

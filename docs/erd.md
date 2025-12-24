@@ -42,6 +42,7 @@ erDiagram
     int issue_type_id FK
     string problem_description
     int assigned_specialist_id FK
+    datetime due_at
     datetime started_at
     datetime completed_at
   }
@@ -71,6 +72,26 @@ erDiagram
     datetime created_at
   }
 
+  TICKET_ASSIGNEES {
+    int id PK
+    int ticket_id FK
+    int user_id FK
+    string role
+    int assigned_by_user_id FK
+    datetime assigned_at
+  }
+
+  DEADLINE_EXTENSIONS {
+    int id PK
+    int ticket_id FK
+    datetime old_due_at
+    datetime new_due_at
+    bool client_confirmed
+    string note
+    int extended_by_user_id FK
+    datetime extended_at
+  }
+
   NOTIFICATIONS {
     int id PK
     int user_id FK
@@ -83,6 +104,8 @@ erDiagram
   USERS ||--o{ TICKETS : "assigned to"
   USERS ||--o{ STATUS_HISTORY : "changes"
   USERS ||--o{ TICKET_COMMENTS : "writes"
+  USERS ||--o{ TICKET_ASSIGNEES : "participates"
+  USERS ||--o{ DEADLINE_EXTENSIONS : "extends"
   USERS ||--o{ NOTIFICATIONS : "receives"
 
   CLIENTS ||--o{ TICKETS : "creates"
@@ -92,8 +115,9 @@ erDiagram
   TICKETS ||--o{ STATUS_HISTORY : "has"
   TICKETS ||--o{ TICKET_COMMENTS : "has"
   TICKETS ||--o{ TICKET_PARTS : "has"
+  TICKETS ||--o{ TICKET_ASSIGNEES : "has"
+  TICKETS ||--o{ DEADLINE_EXTENSIONS : "has"
   TICKETS ||--o{ NOTIFICATIONS : "about"
 ```
 
 Схема БД (DDL для SQLite) — `repair_requests/schema.sql`.
-

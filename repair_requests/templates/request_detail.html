@@ -15,6 +15,9 @@
       {% if is_master %}
         <a class="btn btn--primary" href="{{ url_for('web.request_work', number=request_obj.number) }}">В работу</a>
       {% endif %}
+      {% if is_manager %}
+        <a class="btn btn--primary" href="{{ url_for('web.request_manage', number=request_obj.number) }}">Управление</a>
+      {% endif %}
     </div>
   </div>
 
@@ -31,6 +34,29 @@
       <div class="card__item">
         <div class="muted">Ответственный мастер</div>
         <div>{{ request_obj.technician_username or "—" }}</div>
+      </div>
+    </div>
+
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Срок выполнения</div>
+        <div>{{ request_obj.due_at|dt }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Участники</div>
+        {% if assignees %}
+          <div>
+            {% for username, role in assignees %}
+              <span class="badge">{{ username }}{% if role == 'primary' %} ★{% endif %}</span>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div>—</div>
+        {% endif %}
+      </div>
+      <div class="card__item">
+        <div class="muted">Обновлено</div>
+        <div>{{ request_obj.updated_at|dt }}</div>
       </div>
     </div>
 
@@ -136,4 +162,35 @@
       <p class="muted">История пока пуста.</p>
     {% endif %}
   </div>
+
+  {% if request_obj.status.value == 'ready' %}
+    <div class="card">
+      <h2 class="h2">Оценка качества</h2>
+      <p class="muted">Сканируйте QR-код, чтобы открыть форму оценки качества работы сервисного центра.</p>
+      <div class="qrbox">
+        <img class="qrbox__img" src="{{ url_for('web.request_quality_qr', number=request_obj.number) }}" alt="QR-код" />
+      </div>
+      <p class="muted"><a class="btn btn--link" href="{{ quality_form_url }}" target="_blank" rel="noreferrer">Открыть форму</a></p>
+    </div>
+  {% endif %}
+
+  {% if deadline_history %}
+    <div class="card">
+      <h2 class="h2">Продление сроков</h2>
+      <ul class="list">
+        {% for d in deadline_history %}
+          <li class="list__item">
+            <div class="stack">
+              <div>
+                {{ d.old_due_at|dt }} → {{ d.new_due_at|dt }}
+                {% if d.client_confirmed %}<span class="badge">Клиент согласовал</span>{% endif %}
+              </div>
+              <div class="muted">{{ d.extended_by }} — {{ d.extended_at|dt }}</div>
+              {% if d.note %}<div class="pre">{{ d.note }}</div>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
 {% endblock %}

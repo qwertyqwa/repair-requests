@@ -6,6 +6,10 @@
 - **Задание 1 (спецификация/алгоритмы):** `docs/assignment1.md`
 - **Задание 1 (схемы Mermaid):** `docs/task1.md`
 - **Задание 2 (ERD):** `docs/erd.md`
+- **Задание 2 (запросы/импорт/бэкап):** `docs/task2_howto.md`
+- **Задание 3 (предложения):** `docs/task3_modification_proposals.txt`
+- **Задание 3 (качество кода):** `docs/task3_code_quality.md`
+- **Задание 3 (РСП):** `docs/Руководство системного программиста XX.md`
 
 ## Запуск
 
@@ -34,6 +38,7 @@ python -m repair_requests
 - `admin` / `admin` (роль: администратор)
 - `operator` / `operator` (роль: оператор)
 - `master` / `master` (роль: мастер)
+- `manager` / `manager` (роль: менеджер по качеству)
 
 Пользователи создаются автоматически при первом запуске и сохраняются в SQLite БД `data/app.db`.
 

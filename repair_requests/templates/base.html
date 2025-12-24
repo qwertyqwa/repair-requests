@@ -24,6 +24,12 @@
             <a class="nav__link" href="{{ url_for('web.notifications') }}">
               Уведомления{% if g.unread_notifications_count %} ({{ g.unread_notifications_count }}){% endif %}
             </a>
+            {% if g.user.role.value == 'admin' %}
+              <a class="nav__link" href="{{ url_for('web.admin_users') }}">Пользователи</a>
+            {% endif %}
+            {% if g.user.role.value == 'manager' %}
+              <a class="nav__link" href="{{ url_for('web.manager_overdue') }}">Просрочено</a>
+            {% endif %}
           </nav>
           <div class="userbox">
             <div class="userbox__text">

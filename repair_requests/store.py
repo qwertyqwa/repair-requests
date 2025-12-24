@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from repair_requests.db import connect, init_db
 from repair_requests.domain import (
@@ -88,9 +88,69 @@ class SqliteStore:
                 for r in rows
             ]
 
-    def list_requests(self) -> list[RepairRequest]:
+    def list_users(self) -> list[User]:
         with connect(self.db_path) as connection:
-            rows = connection.execute(self._tickets_select_sql() + " ORDER BY t.request_number DESC").fetchall()
+            rows = connection.execute(
+                "SELECT id, username, password_hash, role, full_name, is_active "
+                "FROM users ORDER BY username"
+            ).fetchall()
+            return [
+                User(
+                    id=int(r["id"]),
+                    username=str(r["username"]),
+                    password_hash=str(r["password_hash"]),
+                    role=Role(str(r["role"])),
+                    full_name=str(r["full_name"] or ""),
+                    is_active=bool(int(r["is_active"])),
+                )
+                for r in rows
+            ]
+
+    def create_user(
+        self,
+        *,
+        username: str,
+        password: str,
+        role: Role,
+        full_name: str,
+        is_active: bool = True,
+    ) -> None:
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO users(username, password_hash, role, full_name, is_active, created_at) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    username,
+                    generate_password_hash(password),
+                    role.value,
+                    full_name,
+                    1 if is_active else 0,
+                    now,
+                ),
+            )
+            connection.commit()
+
+    def set_user_active(self, user_id: int, is_active: bool) -> None:
+        with connect(self.db_path) as connection:
+            connection.execute(
+                "UPDATE users SET is_active = ? WHERE id = ?",
+                (1 if is_active else 0, user_id),
+            )
+            connection.commit()
+
+    def list_requests(self, assigned_user_id: int | None = None) -> list[RepairRequest]:
+        sql = self._tickets_select_sql()
+        params: tuple[object, ...] = ()
+        if assigned_user_id is not None:
+            sql += (
+                " WHERE EXISTS (SELECT 1 FROM ticket_assignees ta "
+                "WHERE ta.ticket_id = t.id AND ta.user_id = ?)"
+            )
+            params = (assigned_user_id,)
+        sql += " ORDER BY t.request_number DESC"
+        with connect(self.db_path) as connection:
+            rows = connection.execute(sql, params).fetchall()
             return [self._row_to_ticket(r) for r in rows]
 
     def get_request(self, number: int) -> RepairRequest | None:
@@ -113,7 +173,9 @@ class SqliteStore:
         technician_username: str | None,
         created_by_user_id: int,
     ) -> RepairRequest:
-        now = utcnow().isoformat()
+        now_dt = utcnow()
+        now = now_dt.isoformat()
+        due_at = (now_dt + timedelta(days=3)).isoformat()
         with connect(self.db_path) as connection:
             client_id = self._get_or_create_client(
                 connection,
@@ -136,8 +198,8 @@ class SqliteStore:
             cursor = connection.execute(
                 "INSERT INTO tickets("
                 "request_number, created_at, updated_at, status, client_id, appliance_id, "
-                "issue_type_id, problem_description, assigned_specialist_id, started_at, completed_at"
-                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                "issue_type_id, problem_description, assigned_specialist_id, due_at, started_at, completed_at"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
                 (
                     request_number,
                     now,
@@ -148,6 +210,7 @@ class SqliteStore:
                     issue_type_id,
                     problem_description,
                     assigned_specialist_id,
+                    due_at,
                 ),
             )
             ticket_id = int(cursor.lastrowid)
@@ -159,6 +222,11 @@ class SqliteStore:
             )
 
             if assigned_specialist_id is not None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO ticket_assignees(ticket_id, user_id, role, assigned_by_user_id, assigned_at) "
+                    "VALUES(?, ?, 'primary', ?, ?)",
+                    (ticket_id, int(assigned_specialist_id), created_by_user_id, now),
+                )
                 self._create_notification(
                     connection,
                     user_id=assigned_specialist_id,
@@ -283,6 +351,18 @@ class SqliteStore:
                 ),
             )
 
+            if new_assigned_id is not None and new_assigned_id != old_assigned_id:
+                connection.execute(
+                    "UPDATE ticket_assignees SET role = 'assistant' WHERE ticket_id = ? AND role = 'primary'",
+                    (ticket_id,),
+                )
+                connection.execute(
+                    "INSERT INTO ticket_assignees(ticket_id, user_id, role, assigned_by_user_id, assigned_at) "
+                    "VALUES(?, ?, 'primary', ?, ?) "
+                    "ON CONFLICT(ticket_id, user_id) DO UPDATE SET role='primary', assigned_by_user_id=excluded.assigned_by_user_id, assigned_at=excluded.assigned_at",
+                    (ticket_id, int(new_assigned_id), changed_by_user_id, now),
+                )
+
             if status is not None and status.value != old_status:
                 connection.execute(
                     "INSERT INTO status_history(ticket_id, old_status, new_status, changed_by_user_id, changed_at) "
@@ -330,7 +410,7 @@ class SqliteStore:
         *,
         query: str,
         status: RequestStatus | None = None,
-        technician_username: str | None = None,
+        assigned_user_id: int | None = None,
     ) -> list[RepairRequest]:
         needle = query.strip()
         filters: list[str] = []
@@ -340,9 +420,11 @@ class SqliteStore:
             filters.append("t.status = ?")
             params.append(status.value)
 
-        if technician_username is not None:
-            filters.append("u.username = ?")
-            params.append(technician_username)
+        if assigned_user_id is not None:
+            filters.append(
+                "EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_id = ?)"
+            )
+            params.append(assigned_user_id)
 
         if needle:
             if needle.isdigit():
@@ -368,6 +450,217 @@ class SqliteStore:
         with connect(self.db_path) as connection:
             rows = connection.execute(sql, tuple(params)).fetchall()
             return [self._row_to_ticket(r) for r in rows]
+
+    def is_user_assigned_to_ticket(self, number: int, user_id: int) -> bool:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT t.id, t.assigned_specialist_id FROM tickets t WHERE t.request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return False
+            if row["assigned_specialist_id"] is not None and int(row["assigned_specialist_id"]) == user_id:
+                return True
+            ticket_id = int(row["id"])
+            assigned = connection.execute(
+                "SELECT 1 FROM ticket_assignees WHERE ticket_id = ? AND user_id = ?",
+                (ticket_id, user_id),
+            ).fetchone()
+            return assigned is not None
+
+    def list_assignees(self, number: int) -> list[tuple[str, str]]:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return []
+            ticket_id = int(row["id"])
+            rows = connection.execute(
+                "SELECT u.username, ta.role "
+                "FROM ticket_assignees ta "
+                "JOIN users u ON u.id = ta.user_id "
+                "WHERE ta.ticket_id = ? "
+                "ORDER BY CASE ta.role WHEN 'primary' THEN 0 ELSE 1 END, u.username",
+                (ticket_id,),
+            ).fetchall()
+            return [(str(r["username"]), str(r["role"])) for r in rows]
+
+    def add_assignee(
+        self,
+        number: int,
+        *,
+        master_username: str,
+        role: str,
+        assigned_by_user_id: int,
+    ) -> None:
+        if role not in {"primary", "assistant"}:
+            raise ValueError("Invalid assignee role")
+
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            ticket_row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not ticket_row:
+                raise KeyError("Request not found")
+            ticket_id = int(ticket_row["id"])
+
+            user_row = connection.execute(
+                "SELECT id FROM users WHERE username = ? AND role = ? AND is_active = 1",
+                (master_username, Role.MASTER.value),
+            ).fetchone()
+            if not user_row:
+                raise ValueError("Master not found")
+            master_id = int(user_row["id"])
+
+            if role == "primary":
+                connection.execute(
+                    "UPDATE ticket_assignees SET role = 'assistant' WHERE ticket_id = ? AND role = 'primary'",
+                    (ticket_id,),
+                )
+                connection.execute(
+                    "UPDATE tickets SET assigned_specialist_id = ?, updated_at = ? WHERE id = ?",
+                    (master_id, now, ticket_id),
+                )
+
+            connection.execute(
+                "INSERT INTO ticket_assignees(ticket_id, user_id, role, assigned_by_user_id, assigned_at) "
+                "VALUES(?, ?, ?, ?, ?) "
+                "ON CONFLICT(ticket_id, user_id) DO UPDATE SET role=excluded.role, assigned_by_user_id=excluded.assigned_by_user_id, assigned_at=excluded.assigned_at",
+                (ticket_id, master_id, role, assigned_by_user_id, now),
+            )
+
+            self._create_notification(
+                connection,
+                user_id=master_id,
+                ticket_id=ticket_id,
+                message=f"Вас привлекли к заявке №{number} (роль: {role}).",
+                created_at=now,
+            )
+
+            connection.commit()
+
+    def extend_deadline(
+        self,
+        number: int,
+        *,
+        new_due_at: datetime,
+        client_confirmed: bool,
+        note: str,
+        extended_by_user_id: int,
+    ) -> None:
+        now = utcnow().isoformat()
+        new_due = new_due_at.isoformat()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id, due_at FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                raise KeyError("Request not found")
+            ticket_id = int(row["id"])
+            old_due = str(row["due_at"]) if row["due_at"] is not None else None
+
+            connection.execute(
+                "UPDATE tickets SET due_at = ?, updated_at = ? WHERE id = ?",
+                (new_due, now, ticket_id),
+            )
+            connection.execute(
+                "INSERT INTO deadline_extensions(ticket_id, old_due_at, new_due_at, client_confirmed, note, extended_by_user_id, extended_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ticket_id,
+                    old_due,
+                    new_due,
+                    1 if client_confirmed else 0,
+                    note,
+                    extended_by_user_id,
+                    now,
+                ),
+            )
+
+            assignees = connection.execute(
+                "SELECT user_id FROM ticket_assignees WHERE ticket_id = ?",
+                (ticket_id,),
+            ).fetchall()
+            for a in assignees:
+                self._create_notification(
+                    connection,
+                    user_id=int(a["user_id"]),
+                    ticket_id=ticket_id,
+                    message=f"По заявке №{number} продлён срок выполнения.",
+                    created_at=now,
+                )
+
+            connection.commit()
+
+    def list_deadline_extensions(self, number: int) -> list[dict[str, object]]:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                return []
+            ticket_id = int(row["id"])
+            rows = connection.execute(
+                "SELECT de.id, de.old_due_at, de.new_due_at, de.client_confirmed, de.note, u.username AS extended_by, de.extended_at "
+                "FROM deadline_extensions de "
+                "JOIN users u ON u.id = de.extended_by_user_id "
+                "WHERE de.ticket_id = ? "
+                "ORDER BY de.id DESC",
+                (ticket_id,),
+            ).fetchall()
+            items: list[dict[str, object]] = []
+            for r in rows:
+                items.append(
+                    {
+                        "id": int(r["id"]),
+                        "old_due_at": parse_dt(str(r["old_due_at"]) if r["old_due_at"] else None),
+                        "new_due_at": datetime.fromisoformat(str(r["new_due_at"])),
+                        "client_confirmed": bool(int(r["client_confirmed"])),
+                        "note": str(r["note"] or ""),
+                        "extended_by": str(r["extended_by"]),
+                        "extended_at": datetime.fromisoformat(str(r["extended_at"])),
+                    }
+                )
+            return items
+
+    def request_help(
+        self, number: int, *, requested_by_user_id: int, message: str
+    ) -> None:
+        now = utcnow().isoformat()
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT id FROM tickets WHERE request_number = ?",
+                (number,),
+            ).fetchone()
+            if not row:
+                raise KeyError("Request not found")
+            ticket_id = int(row["id"])
+
+            connection.execute(
+                "INSERT INTO ticket_comments(ticket_id, user_id, body, created_at) VALUES(?, ?, ?, ?)",
+                (ticket_id, requested_by_user_id, f"[HELP] {message}", now),
+            )
+
+            managers = connection.execute(
+                "SELECT id FROM users WHERE role = ? AND is_active = 1",
+                (Role.MANAGER.value,),
+            ).fetchall()
+            for m in managers:
+                self._create_notification(
+                    connection,
+                    user_id=int(m["id"]),
+                    ticket_id=ticket_id,
+                    message=f"Запрос помощи по заявке №{number}: {message}",
+                    created_at=now,
+                )
+
+            connection.commit()
 
     def list_comments(self, number: int) -> list[TicketComment]:
         with connect(self.db_path) as connection:
@@ -566,7 +859,7 @@ class SqliteStore:
             "it.name AS issue_type, "
             "t.problem_description, "
             "u.username AS technician_username, "
-            "t.started_at, t.completed_at "
+            "t.due_at, t.started_at, t.completed_at "
             "FROM tickets t "
             "JOIN clients c ON c.id = t.client_id "
             "JOIN appliances a ON a.id = t.appliance_id "
@@ -580,6 +873,7 @@ class SqliteStore:
             number=int(row["request_number"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
+            due_at=parse_dt(str(row["due_at"]) if row["due_at"] is not None else None),
             appliance_type=str(row["appliance_type"]),
             appliance_model=str(row["appliance_model"]),
             issue_type=str(row["issue_type"]) if row["issue_type"] is not None else None,
@@ -702,8 +996,8 @@ class SqliteStore:
         except Exception:
             label = new_status
         rows = connection.execute(
-            "SELECT id FROM users WHERE is_active = 1 AND role IN (?, ?) AND id != ?",
-            (Role.ADMIN.value, Role.OPERATOR.value, changed_by_user_id),
+            "SELECT id FROM users WHERE is_active = 1 AND role IN (?, ?, ?) AND id != ?",
+            (Role.ADMIN.value, Role.OPERATOR.value, Role.MANAGER.value, changed_by_user_id),
         ).fetchall()
         for r in rows:
             self._create_notification(

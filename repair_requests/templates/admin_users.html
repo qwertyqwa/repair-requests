@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% set title = "Пользователи" %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Пользователи</h1>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h2 class="h2">Добавить пользователя</h2>
+      <form class="form" method="post" action="{{ url_for('web.admin_users') }}">
+        <div class="grid">
+          <label class="field">
+            <span class="field__label">Логин *</span>
+            <input class="field__input" name="username" />
+          </label>
+          <label class="field">
+            <span class="field__label">Пароль *</span>
+            <input class="field__input" name="password" type="password" />
+          </label>
+          <label class="field">
+            <span class="field__label">ФИО</span>
+            <input class="field__input" name="full_name" />
+          </label>
+          <label class="field">
+            <span class="field__label">Роль</span>
+            <select class="field__input" name="role">
+              {% for value, label in roles %}
+                <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field__label">Активен</span>
+            <div style="display:flex; gap:10px; align-items:center; height:44px;">
+              <input type="checkbox" name="is_active" value="1" checked />
+              <span class="muted">Можно входить в систему</span>
+            </div>
+          </label>
+        </div>
+        <div class="form__actions">
+          <button class="btn btn--primary" type="submit">Создать</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 class="h2">Список</h2>
+      {% if users %}
+        <div class="tablewrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Логин</th>
+                <th>ФИО</th>
+                <th>Роль</th>
+                <th>Активен</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in users %}
+                <tr>
+                  <td>{{ u.username }}</td>
+                  <td>{{ u.full_name or "—" }}</td>
+                  <td>{{ u.role|role_label }}</td>
+                  <td>{% if u.is_active %}Да{% else %}Нет{% endif %}</td>
+                  <td>
+                    <form method="post" action="{{ url_for('web.admin_user_set_active', user_id=u.id) }}">
+                      {% if u.is_active %}
+                        <input type="hidden" name="is_active" value="0" />
+                        <button class="btn btn--danger" type="submit">Отключить</button>
+                      {% else %}
+                        <input type="hidden" name="is_active" value="1" />
+                        <button class="btn btn--primary" type="submit">Включить</button>
+                      {% endif %}
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="muted">Пользователей нет.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+

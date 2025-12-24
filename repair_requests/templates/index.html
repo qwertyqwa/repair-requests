@@ -34,6 +34,7 @@
           <tr>
             <th>№</th>
             <th>Дата</th>
+            <th>Срок</th>
             <th>Техника</th>
             <th>Клиент</th>
             <th>Телефон</th>
@@ -46,6 +47,7 @@
             <tr>
               <td><a href="{{ url_for('web.request_detail', number=r.number) }}">№{{ r.number }}</a></td>
               <td>{{ r.created_at|dt }}</td>
+              <td>{{ r.due_at|dt }}</td>
               <td>{{ r.appliance_type }} — {{ r.appliance_model }}</td>
               <td>{{ r.client_name }}</td>
               <td>{{ r.client_phone }}</td>

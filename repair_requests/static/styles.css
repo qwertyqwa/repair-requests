@@ -395,6 +395,20 @@ a {
   font-weight: 700;
 }
 
+.qrbox {
+  display: inline-flex;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.qrbox__img {
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+}
+
 @media (max-width: 820px) {
   .grid {
     grid-template-columns: 1fr;

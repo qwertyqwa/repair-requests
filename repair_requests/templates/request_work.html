@@ -29,6 +29,29 @@
       <div class="muted">Описание проблемы</div>
       <div class="pre">{{ request_obj.problem_description }}</div>
     </div>
+
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Срок выполнения</div>
+        <div>{{ request_obj.due_at|dt }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Участники</div>
+        {% if assignees %}
+          <div>
+            {% for username, role in assignees %}
+              <span class="badge">{{ username }}{% if role == 'primary' %} ★{% endif %}</span>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div>—</div>
+        {% endif %}
+      </div>
+      <div class="card__item">
+        <div class="muted">Обновлено</div>
+        <div>{{ request_obj.updated_at|dt }}</div>
+      </div>
+    </div>
   </div>
 
   <div class="cards">
@@ -137,5 +160,18 @@
     {% else %}
       <p class="muted">История пока пуста.</p>
     {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="h2">Нужна помощь?</h2>
+    <form class="form" method="post" action="{{ url_for('web.request_help', number=request_obj.number) }}">
+      <label class="field field--full">
+        <span class="field__label">Опишите проблему</span>
+        <textarea class="field__input" name="message" rows="3" placeholder="Например: не удаётся подобрать запчасть, требуется консультация…"></textarea>
+      </label>
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">Запросить помощь менеджера</button>
+      </div>
+    </form>
   </div>
 {% endblock %}

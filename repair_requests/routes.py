@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import io
+from datetime import datetime, timezone
 
 from urllib.parse import urlparse
 
@@ -13,6 +14,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     session,
     url_for,
 )
@@ -83,8 +85,10 @@ def ensure_request_access(request_obj: RepairRequest) -> None:
     user = getattr(g, "user", None)
     if user is None:
         abort(401)
-    if user.role == Role.MASTER and request_obj.technician_username != user.username:
-        abort(403)
+    if user.role == Role.MASTER:
+        store = get_store()
+        if not store.is_user_assigned_to_ticket(request_obj.number, user.id):
+            abort(403)
 
 
 @bp.app_template_filter("dt")
@@ -136,6 +140,20 @@ def validate_phone(raw: str) -> str | None:
     if len(digits) > 15:
         return None
     return digits
+
+
+def parse_datetime_input(value: str | None) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        parsed = parsed.replace(tzinfo=local_tz)
+    return parsed.astimezone(timezone.utc)
 
 
 def validate_request_form(form: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -203,9 +221,11 @@ def index():
         abort(401)
 
     status = parse_status(request.args.get("status"))
-    requests_list = store.list_requests()
-    if user.role == Role.MASTER:
-        requests_list = [r for r in requests_list if r.technician_username == user.username]
+    requests_list = (
+        store.list_requests(assigned_user_id=user.id)
+        if user.role == Role.MASTER
+        else store.list_requests()
+    )
     if status is not None:
         requests_list = [r for r in requests_list if r.status == status]
 
@@ -293,15 +313,51 @@ def request_detail(number: int):
     comments = store.list_comments(number)
     parts = store.list_parts(number)
     history = store.list_history(number)
+    assignees = store.list_assignees(number)
+    deadline_history = store.list_deadline_extensions(number)
     return render_template(
         "request_detail.html",
         request_obj=request_obj,
         can_manage=user.role in {Role.ADMIN, Role.OPERATOR},
         is_master=user.role == Role.MASTER,
+        is_manager=user.role == Role.MANAGER,
         comments=comments,
         parts=parts,
         history=history,
+        assignees=assignees,
+        deadline_history=deadline_history,
+        quality_form_url=current_app.config.get("QUALITY_FORM_URL", ""),
     )
+
+
+@bp.get("/requests/<int:number>/quality-qr")
+def request_quality_qr(number: int):
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+    ensure_request_access(request_obj)
+
+    form_url = current_app.config.get("QUALITY_FORM_URL") or ""
+    if not isinstance(form_url, str) or not form_url:
+        abort(500)
+
+    try:
+        import qrcode  # type: ignore[import-not-found]
+    except Exception:
+        abort(500)
+
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(form_url)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return send_file(buffer, mimetype="image/png", download_name=f"quality_qr_{number}.png")
 
 
 @bp.get("/requests/<int:number>/work")
@@ -317,6 +373,7 @@ def request_work(number: int):
     comments = store.list_comments(number)
     parts = store.list_parts(number)
     history = store.list_history(number)
+    assignees = store.list_assignees(number)
     return render_template(
         "request_work.html",
         request_obj=request_obj,
@@ -326,6 +383,7 @@ def request_work(number: int):
         comments=comments,
         parts=parts,
         history=history,
+        assignees=assignees,
     )
 
 
@@ -526,6 +584,129 @@ def request_delete_part(number: int, part_id: int):
     return redirect(request.referrer or url_for("web.request_work", number=number))
 
 
+@bp.post("/requests/<int:number>/help")
+def request_help(number: int):
+    require_roles(Role.MASTER)
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+    ensure_request_access(request_obj)
+
+    message = (request.form.get("message") or "").strip()
+    if not message:
+        flash("Опишите проблему, чтобы менеджер мог помочь.", "error")
+        return redirect(request.referrer or url_for("web.request_work", number=number))
+
+    store.request_help(number, requested_by_user_id=user.id, message=message)
+    flash("Запрос помощи отправлен менеджеру по качеству.", "success")
+    return redirect(request.referrer or url_for("web.request_work", number=number))
+
+
+@bp.get("/requests/<int:number>/manage")
+def request_manage(number: int):
+    require_roles(Role.MANAGER)
+    store = get_store()
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+
+    assignees = store.list_assignees(number)
+    masters = store.list_masters()
+    deadline_history = store.list_deadline_extensions(number)
+    return render_template(
+        "request_manage.html",
+        request_obj=request_obj,
+        assignees=assignees,
+        masters=masters,
+        deadline_history=deadline_history,
+    )
+
+
+@bp.post("/requests/<int:number>/assignees")
+def request_add_assignee(number: int):
+    require_roles(Role.MANAGER)
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+
+    master_username = (request.form.get("master_username") or "").strip()
+    role = (request.form.get("role") or "assistant").strip()
+    if not master_username:
+        flash("Выберите мастера.", "error")
+        return redirect(url_for("web.request_manage", number=number))
+
+    try:
+        store.add_assignee(
+            number,
+            master_username=master_username,
+            role=role,
+            assigned_by_user_id=user.id,
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("web.request_manage", number=number))
+
+    flash("Мастер добавлен к заявке.", "success")
+    return redirect(url_for("web.request_manage", number=number))
+
+
+@bp.post("/requests/<int:number>/deadline")
+def request_extend_deadline(number: int):
+    require_roles(Role.MANAGER)
+    store = get_store()
+    user = g.user
+    if user is None:
+        abort(401)
+
+    request_obj = store.get_request(number)
+    if not request_obj:
+        abort(404)
+
+    new_due_at = parse_datetime_input(request.form.get("new_due_at"))
+    if new_due_at is None:
+        flash("Укажите корректную дату и время нового срока.", "error")
+        return redirect(url_for("web.request_manage", number=number))
+
+    client_confirmed = request.form.get("client_confirmed") == "1"
+    if not client_confirmed:
+        flash("Продление возможно только с согласованием клиента.", "error")
+        return redirect(url_for("web.request_manage", number=number))
+
+    note = (request.form.get("note") or "").strip()
+    store.extend_deadline(
+        number,
+        new_due_at=new_due_at,
+        client_confirmed=client_confirmed,
+        note=note,
+        extended_by_user_id=user.id,
+    )
+    flash("Срок выполнения продлён.", "success")
+    return redirect(url_for("web.request_manage", number=number))
+
+
+@bp.get("/manager/overdue")
+def manager_overdue():
+    require_roles(Role.MANAGER)
+    store = get_store()
+    now = datetime.now(timezone.utc)
+    requests_list = []
+    for r in store.list_requests():
+        if r.status != RequestStatus.READY and r.due_at is not None and r.due_at < now:
+            requests_list.append(r)
+    return render_template("manager_overdue.html", requests=requests_list)
+
+
 @bp.get("/search")
 def search():
     store = get_store()
@@ -534,11 +715,11 @@ def search():
         abort(401)
     query = (request.args.get("q") or "").strip()
     status = parse_status(request.args.get("status"))
-    technician_username = user.username if user.role == Role.MASTER else None
+    assigned_user_id = user.id if user.role == Role.MASTER else None
     results = store.search_requests(
         query=query,
         status=status,
-        technician_username=technician_username,
+        assigned_user_id=assigned_user_id,
     )
 
     if query and not results:
@@ -562,15 +743,65 @@ def stats():
     user = g.user
     if user is None:
         abort(401)
-    requests_list = store.list_requests()
-    if user.role == Role.MASTER:
-        requests_list = [r for r in requests_list if r.technician_username == user.username]
+    requests_list = (
+        store.list_requests(assigned_user_id=user.id)
+        if user.role == Role.MASTER
+        else store.list_requests()
+    )
     summary = requests_summary(requests_list)
     return render_template(
         "stats.html",
         summary=summary,
         format_timedelta=format_timedelta,
     )
+
+
+@bp.route("/admin/users", methods=["GET", "POST"])
+def admin_users():
+    require_roles(Role.ADMIN)
+    store = get_store()
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        full_name = (request.form.get("full_name") or "").strip()
+        role_raw = (request.form.get("role") or "").strip()
+        is_active = request.form.get("is_active") == "1"
+
+        if not username:
+            flash("Укажите логин.", "error")
+        elif not password:
+            flash("Укажите пароль.", "error")
+        else:
+            try:
+                role = Role(role_raw)
+                store.create_user(
+                    username=username,
+                    password=password,
+                    role=role,
+                    full_name=full_name,
+                    is_active=is_active,
+                )
+                flash("Пользователь создан.", "success")
+                return redirect(url_for("web.admin_users"))
+            except ValueError:
+                flash("Некорректная роль.", "error")
+            except Exception:
+                flash("Не удалось создать пользователя (возможно, логин уже занят).", "error")
+
+    roles = [(r.value, ROLE_LABELS.get(r, r.value)) for r in Role]
+    users = store.list_users()
+    return render_template("admin_users.html", users=users, roles=roles)
+
+
+@bp.post("/admin/users/<int:user_id>/active")
+def admin_user_set_active(user_id: int):
+    require_roles(Role.ADMIN)
+    store = get_store()
+    is_active = request.form.get("is_active") == "1"
+    store.set_user_active(user_id, is_active)
+    flash("Статус пользователя обновлён.", "success")
+    return redirect(url_for("web.admin_users"))
 
 
 @bp.get("/notifications")

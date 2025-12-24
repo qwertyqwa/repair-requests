@@ -13,6 +13,7 @@ class Role(str, Enum):
     ADMIN = "admin"
     OPERATOR = "operator"
     MASTER = "master"
+    MANAGER = "manager"
 
 
 class RequestStatus(str, Enum):
@@ -34,6 +35,7 @@ ROLE_LABELS: dict[Role, str] = {
     Role.ADMIN: "Администратор",
     Role.OPERATOR: "Оператор",
     Role.MASTER: "Мастер",
+    Role.MANAGER: "Менеджер по качеству",
 }
 
 
@@ -63,6 +65,7 @@ class RepairRequest:
     number: int
     created_at: datetime
     updated_at: datetime
+    due_at: datetime | None
     appliance_type: str
     appliance_model: str
     issue_type: str | None

@@ -1,5 +1,13 @@
 {
+  "name": "repair-requests",
+  "private": true,
   "dependencies": {
     "docx": "^9.5.1"
+  },
+  "scripts": {
+    "report:1": "node report/generate_report_task1.js",
+    "report:2": "node report/generate_report_task2.js",
+    "report:3": "node report/generate_report_task3.js",
+    "sysprog": "node report/generate_sysprog_manual.js 00"
   }
 }

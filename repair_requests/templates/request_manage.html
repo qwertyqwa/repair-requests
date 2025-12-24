@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% set title = "Управление заявкой №" ~ request_obj.number %}
+
+{% block content %}
+  <div class="pagehead">
+    <h1>Заявка №{{ request_obj.number }} — управление</h1>
+    <div class="pagehead__actions">
+      <a class="btn" href="{{ url_for('web.request_detail', number=request_obj.number) }}">Назад</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card__row">
+      <div class="card__item">
+        <div class="muted">Статус</div>
+        <div>{{ request_obj.status|status_label }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Срок выполнения</div>
+        <div>{{ request_obj.due_at|dt }}</div>
+      </div>
+      <div class="card__item">
+        <div class="muted">Ответственный мастер</div>
+        <div>{{ request_obj.technician_username or "—" }}</div>
+      </div>
+    </div>
+
+    <div class="card__block">
+      <div class="muted">Описание проблемы</div>
+      <div class="pre">{{ request_obj.problem_description }}</div>
+    </div>
+
+    <div class="card__block">
+      <div class="muted">Участники</div>
+      {% if assignees %}
+        <div>
+          {% for username, role in assignees %}
+            <span class="badge">{{ username }}{% if role == 'primary' %} ★{% endif %}</span>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div>—</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h2 class="h2">Привлечь мастера</h2>
+      <form class="filters" method="post" action="{{ url_for('web.request_add_assignee', number=request_obj.number) }}">
+        <label class="field field--grow">
+          <span class="field__label">Мастер</span>
+          <select class="field__input" name="master_username">
+            <option value="" selected>—</option>
+            {% for m in masters %}
+              <option value="{{ m.username }}">{{ m.username }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          <span class="field__label">Роль</span>
+          <select class="field__input" name="role">
+            <option value="assistant" selected>Помощник</option>
+            <option value="primary">Ответственный</option>
+          </select>
+        </label>
+        <button class="btn btn--primary" type="submit">Добавить</button>
+      </form>
+      <p class="muted">«Ответственный» меняет основного мастера, «Помощник» добавляет мастера к работе.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="h2">Продлить срок</h2>
+      <form class="form" method="post" action="{{ url_for('web.request_extend_deadline', number=request_obj.number) }}">
+        <div class="grid">
+          <label class="field">
+            <span class="field__label">Новый срок (дата/время)</span>
+            <input class="field__input" type="datetime-local" name="new_due_at" />
+          </label>
+          <label class="field">
+            <span class="field__label">Согласование клиента</span>
+            <div style="display:flex; gap:10px; align-items:center; height:44px;">
+              <input type="checkbox" name="client_confirmed" value="1" />
+              <span class="muted">Клиент подтвердил продление</span>
+            </div>
+          </label>
+          <label class="field field--full">
+            <span class="field__label">Примечание</span>
+            <textarea class="field__input" name="note" rows="3" placeholder="Коротко: причина продления, что согласовано с клиентом…"></textarea>
+          </label>
+        </div>
+        <div class="form__actions">
+          <button class="btn btn--primary" type="submit">Продлить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="h2">История продлений</h2>
+    {% if deadline_history %}
+      <ul class="list">
+        {% for d in deadline_history %}
+          <li class="list__item">
+            <div class="stack">
+              <div>
+                {{ d.old_due_at|dt }} → {{ d.new_due_at|dt }}
+                {% if d.client_confirmed %}<span class="badge">Клиент согласовал</span>{% endif %}
+              </div>
+              <div class="muted">{{ d.extended_by }} — {{ d.extended_at|dt }}</div>
+              {% if d.note %}<div class="pre">{{ d.note }}</div>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Продлений пока не было.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+
